@@ -1,0 +1,12 @@
+[Unit]
+Description=Python web app
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/
+ExecStart=/usr/bin/python3 /tmp/app-bottle.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

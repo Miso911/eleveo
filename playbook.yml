@@ -1,0 +1,191 @@
+---
+- name: Setting up the system
+  hosts: all
+  become: yes
+  vars:
+    nginx_password: !vault |
+          $ANSIBLE_VAULT;1.1;AES256
+          65336434373831353463393566633036323566613962363139346466646632323662653661353539
+          3263623131353161636131356633343763343965326539340a616637346330326232393135343863
+          65383534383536613365356337326666643766313237663366333064303566313031303161396331
+          6262393532376435360a396564303662346233303939363537663063306465356238306137646239
+          3565
+  tasks:
+    - name: Creating prometheus repository
+      yum_repository:
+        name: prometheus
+        description: prometheus repository
+        gpgcheck: no
+        baseurl: "https://packagecloud.io/prometheus-rpm/release/el/$releasever/$basearch"
+
+    - name: Upgrading all packages, kernel excluded
+      yum:
+        name: '*'
+        state: latest
+        exclude: kernel*
+  
+    - name: Install bottle python package
+      pip:
+        name: bottle
+
+    - name: Installing new packages
+      yum:
+        name: ['nginx','grafana','prometheus2','node_exporter','setroubleshoot','setools']
+        state: present
+    
+          
+    - name: copy nginx.conf
+      template:
+        src: files/nginx.conf
+        dest: /etc/nginx/nginx.conf
+        owner: root
+        group: root
+        mode: '644'
+
+    - name: copy app-bottle.py
+      template:
+        src: files/app-bottle.py
+        dest: /tmp/app-bottle.py
+        owner: root
+        group: root
+        mode: '644'
+
+    - name: copy app-bottle.service
+      template:
+        src: files/app-bottle.service
+        dest: /etc/systemd/system
+        owner: root
+        group: root
+        mode: '755'
+
+    - name: Removing files
+      ansible.builtin.file:
+        path: /usr/share/nginx/html/{{item}}
+        state: absent
+      with_items: 
+        - index.html
+        - 404.html
+        - nginx-logo.png
+        - poweredby.png
+        - 50x.html
+    
+    - name: Creating directories
+      ansible.builtin.file:
+        path: /usr/share/nginx/html/{{item}}
+        state: directory
+        mode: '0755'
+      with_items:
+        - app
+        - health
+        - grafana
+        - dashboard
+  
+    - name: copy grafana-datasource.yaml
+      template:
+        src: files/grafana-datasource.yaml
+        dest: /etc/grafana/provisioning/datasources/
+        owner: root
+        group: root
+        mode: '644'
+
+    - name: copy grafana-dashboard.yaml
+      template:
+        src: files/grafana-dashboard.yaml
+        dest: /etc/grafana/provisioning/dashboards/grafana-dashboard.yaml
+        owner: root
+        group: root
+        mode: '644'
+
+    - name: copy grafana-metrics.json
+      template:
+        src: files/grafana-metrics.json
+        dest: /etc/grafana/provisioning/dashboards/grafana-metrics.json
+        owner: root
+        group: root
+        mode: '644'
+
+    - name: copy grafana.ini
+      template:
+        src: files/grafana.ini
+        dest: /etc/grafana/grafana.ini
+        owner: root
+        group: grafana
+        mode: '640'
+
+    - name: Editing prometheus.yml
+      replace:
+        path: /etc/prometheus/prometheus.yml
+        regexp: 'localhost:9090'
+        replace: 'localhost:9100'
+
+    - name: Adjusting node_exporter.service
+      ansible.builtin.lineinfile:
+        path: /usr/lib/systemd/system/node_exporter.service
+        regexp: '^ExecStart=/usr/bin/node_exporter'
+        line: 'ExecStart=/usr/bin/node_exporter --collector.systemd'    
+
+    - name: copy postinstall.sh
+      template:
+        src: files/postinstall.sh
+        dest: postinstall.sh
+        owner: root
+        group: root
+        mode: '744'
+
+    - name: Executing postinstall script
+      ansible.builtin.script: postinstall.sh
+
+    - name: Changing Grafana admin password
+      command: grafana-cli --homepath "/usr/share/grafana" admin reset-admin-password {{ nginx_password }}
+
+    - name: Starting nginx
+      ansible.builtin.service:
+        name: nginx
+        state: started
+        enabled: yes
+
+    - name: Starting grafana
+      ansible.builtin.service:
+        name: grafana-server
+        state: started
+        enabled: yes
+    
+    - name: Starting Prometheus
+      ansible.builtin.service:
+        name: prometheus
+        state: started
+        enabled: yes
+
+    - name: Starting firewall
+      ansible.builtin.service:
+        name: firewalld.service
+        state: started
+        enabled: yes
+
+    - name: Starting node_exporter
+      ansible.builtin.service:
+        name: node_exporter.service
+        state: started
+        enabled: yes
+
+    - name: Starting app-bottle
+      ansible.builtin.service:
+        name: app-bottle
+        state: started
+        enabled: yes
+  
+    - name: Opening selected ports
+      firewalld:
+        permanent: yes
+        immediate: yes
+        port: "{{item.port}}/{{item.proto}}"
+        state: "{{item.state}}"
+      with_items: 
+        - {port: "22", proto: "tcp", state: "enabled" }
+        - {port: "80", proto: "tcp", state: "enabled" }
+        - {port: "3000", proto: "tcp", state: "enabled" }
+        - {port: "8000", proto: "tcp", state: "enabled" }
+        - {port: "9090", proto: "tcp", state: "enabled" }
+        - {port: "9100", proto: "tcp", state: "enabled" }
+
+    
